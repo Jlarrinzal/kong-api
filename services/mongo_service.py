@@ -19,3 +19,7 @@ def insert_service(service_name, secret):
             "service_name": service_name,
             "secret": secret
         })
+
+def delete_service_from_db(service_name):
+    result = services_collection.delete_one({"service_name": service_name})
+    return result.deleted_count > 0

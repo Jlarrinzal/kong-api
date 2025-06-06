@@ -8,7 +8,7 @@ from services.kong_service_configurator import configure_jwt_service, delete_ser
 
 kong_blueprint = Blueprint("kong", __name__)
 
-@kong_blueprint.route("/create-jwt-kong", methods=["POST"])
+@kong_blueprint.route("/create-jwt-service", methods=["POST"])
 def setup_kong():
     """
     Crear configuración JWT para un servicio en Kong
@@ -43,7 +43,7 @@ def setup_kong():
     result = configure_jwt_service(service_name, service_url)
     return jsonify(result), 200
 
-@kong_blueprint.route("/create-simple-kong", methods=["POST"])
+@kong_blueprint.route("/create-simple-service", methods=["POST"])
 def setup_simple_proxy():
     """
     Crear un servicio proxy simple en Kong
@@ -162,7 +162,7 @@ def api_get_all_kong_resources():
     """
     return jsonify(get_all_kong_resources()), 200
 
-@kong_blueprint.route("/delete-kong", methods=["DELETE"])
+@kong_blueprint.route("/delete-service", methods=["DELETE"])
 def delete_kong():
     """
     Eliminar las rutas y servicios asociados a un nombre

@@ -1,7 +1,7 @@
 import requests
 from pymongo import MongoClient
 import os
-from services.mongo_service import insert_service
+from services.mongo_service import delete_service_from_db, insert_service
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -206,22 +206,41 @@ def get_all_services():
         return []
 
 def get_routes_by_service(service_name):
-    resp = requests.get(f"{KONG_ADMIN_URL}/services/{service_name}/routes")
-    if resp.status_code == 200:
-        return resp.json().get("data", [])
-    elif resp.status_code == 404:
-        return {"error": "Service not found"}
-    else:
-        return {"error": f"Unexpected error: {resp.status_code}"}
+    possible_service_names = [
+        f"proxy-{service_name}",
+        f"launch-jwt-{service_name}",
+        f"proxy-service-{service_name}",
+        f"launch-jwt-service-{service_name}"
+    ]
+
+    all_routes = []
+
+    for full_name in possible_service_names:
+        resp = requests.get(f"{KONG_ADMIN_URL}/services/{full_name}/routes")
+        if resp.status_code == 200:
+            all_routes.extend(resp.json().get("data", []))
+
+    if not all_routes:
+        return {"error": "Service not found or has no routes"}
+    return all_routes
 
 def get_service_by_name(service_name):
-    resp = requests.get(f"{KONG_ADMIN_URL}/services/{service_name}")
-    if resp.status_code == 200:
-        return resp.json()
-    elif resp.status_code == 404:
-        return {"error": "Service not found"}
+    possible_names = [
+        f"proxy-service-{service_name}",
+        f"launch-jwt-service-{service_name}"
+    ]
+
+    all_services = []
+
+    for name in possible_names:
+        resp = requests.get(f"{KONG_ADMIN_URL}/services/{name}")
+        if resp.status_code == 200:
+            all_services.append(resp.json())
+
+    if all_services:
+        return all_services
     else:
-        return {"error": f"Unexpected error: {resp.status_code}"}
+        return {"error": "Service not found"}
 
 def get_all_kong_resources():
     services = get_all_services()
@@ -257,6 +276,8 @@ def delete_service(service_name):
                 deleted["services"].append(service)
         else:
             not_found["services"].append(service)
+            
+    deleted["db"] = delete_service_from_db(service_name)
 
     return deleted, not_found
 

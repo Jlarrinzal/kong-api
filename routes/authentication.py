@@ -17,7 +17,8 @@ def generate_jwt():
     payload = {
         'sub': username,
         'iat': int(time.time()),
-        'exp': int(time.time()) + 60 * 5
+        # 'exp': int(time.time()) + 10
+        'exp': int(time.time()) + 60 * 2
     }
 
     token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
@@ -25,7 +26,7 @@ def generate_jwt():
     return jsonify({ 'token': token })
 
 
-SECRET_KEY = "mi_clave_secreta"
+# SECRET_KEY = "mi_clave_secreta"
 
 @auth_blueprint.route('/generate-jwt-policy', methods=['GET'])
 def generate_jwt_policy():
@@ -42,11 +43,17 @@ def generate_jwt_policy():
                     'leftOperand': 'location',
                     'operator': 'eq',
                     'rightOperand': 'EU'
+                },
+                {
+                    'action': 'READ',
+                    'leftOperand': 'location',
+                    'operator': 'eq',
+                    'rightOperand': 'ESP'
                 }
             ],
             'prohibition': [
                 {
-                    'target': 'https://obx-gg.proxy.upcxels.upc.edu/alerting',
+                    'target': 'https://prueba-obx.proxy.upcxels.upc.edu/alerting',
                     'action': 'not_show'
                 }
             ]

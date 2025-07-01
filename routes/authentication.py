@@ -18,7 +18,7 @@ def generate_jwt():
         'sub': username,
         'iat': int(time.time()),
         # 'exp': int(time.time()) + 10
-        'exp': int(time.time()) + 60 * 2
+        'exp': int(time.time()) + 60 * 5
     }
 
     token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')

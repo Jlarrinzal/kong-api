@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from pymongo import MongoClient
 import os
 import time
+import requests
 
 validation_blueprint = Blueprint("validation", __name__)
 
@@ -11,6 +12,16 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["kong_api_db"]
 policies_collection = db["policies"]
 requests_collection = db["requests"]
+
+def get_country_from_ip(ip):
+    try:
+        response = requests.get(f"https://ipapi.co/{ip}/json/")
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("country")
+    except Exception as e:
+        print(f"Error retrieving country for IP {ip}: {e}")
+    return None
 
 @validation_blueprint.route("/validate-ip", methods=["POST"])
 def validate_ip():
@@ -23,14 +34,33 @@ def validate_ip():
         return jsonify({"allowed": False, "reason": "Missing IP or domain"}), 400
 
     policy = policies_collection.find_one({ "domain": domain })
-
+    
     if not policy:
         return jsonify({"allowed": False, "reason": "Domain not found"}), 404
+    
+    allowed_ips = policy.get("allowed_ips", [])
 
+    print("🔍 Comparando IP:", ip, "con", allowed_ips)
+    
     if ip in policy.get("allowed_ips", []):
         return jsonify({ "allowed": True }), 200
     else:
+
+    
+    # if ip not in policy.get("allowed_ips", []):
         return jsonify({ "allowed": False, "reason": "IP not allowed" }), 403
+
+    country = get_country_from_ip(ip)
+
+    allowed_countries = policy.get("allowed_countries", [])
+
+    if allowed_countries and country not in allowed_countries:
+        return jsonify({
+            "allowed": False,
+            "reason": f"Access from country '{country}' is not allowed"
+        }), 403
+
+    return jsonify({ "allowed": True, "country": country }), 200
 
 @validation_blueprint.route("/add-policy", methods=["POST"])
 def add_policy():
@@ -38,15 +68,22 @@ def add_policy():
 
     domain = data.get("domain")
     allowed_ips = data.get("allowed_ips")
+    allowed_countries = data.get("allowed_countries", [])
     request_limit = data.get("request_limit")
 
     if not domain or not allowed_ips or not isinstance(allowed_ips, list):
         return jsonify({
             "error": "Invalid input. 'domain' and 'allowed_ips' (list) required."
         }), 400
+    
+    if not isinstance(allowed_countries, list):
+        return jsonify({
+            "error": "'allowed_countries' must be a list if provided."
+        }), 400
 
     update_fields = {
-        "allowed_ips": allowed_ips
+        "allowed_ips": allowed_ips,
+        "allowed_countries": allowed_countries
     }
 
     if request_limit is not None:
@@ -62,6 +99,7 @@ def add_policy():
         "message": "Policy added/updated successfully",
         "domain": domain,
         "allowed_ips": allowed_ips,
+        "allowed_countries": allowed_countries,
         "request_limit": request_limit
     }), 200
     
@@ -115,7 +153,7 @@ def validate_and_log_request():
     return jsonify({
         "allowed": True,
         "total_requests": num_requests + 1,
-        "request_limit": request_limit
+        "request_limit": request_limit,
     }), 200
 
 @validation_blueprint.route("/odrl-export/<domain>", methods=["GET"])
@@ -126,6 +164,7 @@ def export_odrl_policy(domain):
         return jsonify({ "error": f"No policy found for domain {domain}" }), 404
 
     allowed_ips = policy.get("allowed_ips", [])
+    allowed_countries = policy.get("allowed_countries", [])
     request_limit = policy.get("request_limit")
 
     odrl_policy = {
@@ -148,6 +187,13 @@ def export_odrl_policy(domain):
             "name": "count",
             "operator": "lteq",
             "rightOperand": request_limit
+        })
+        
+    if allowed_countries:
+        odrl_policy["permission"][0]["constraint"].append({
+            "name": "country",
+            "operator": "isAnyOf",
+            "rightOperand": allowed_countries
         })
 
     return jsonify(odrl_policy), 200

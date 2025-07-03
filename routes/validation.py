@@ -15,10 +15,15 @@ requests_collection = db["requests"]
 
 def get_country_from_ip(ip):
     try:
-        response = requests.get(f"https://ipapi.co/{ip}/json/")
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+        response = requests.get(f"https://ipapi.co/{ip}/json/", headers=headers)
         if response.status_code == 200:
             data = response.json()
             return data.get("country")
+        else:
+            print(f"Error: status code {response.status_code}")
     except Exception as e:
         print(f"Error retrieving country for IP {ip}: {e}")
     return None
@@ -34,33 +39,29 @@ def validate_ip():
         return jsonify({"allowed": False, "reason": "Missing IP or domain"}), 400
 
     policy = policies_collection.find_one({ "domain": domain })
-    
+
     if not policy:
         return jsonify({"allowed": False, "reason": "Domain not found"}), 404
-    
+
     allowed_ips = policy.get("allowed_ips", [])
-
-    print("🔍 Comparando IP:", ip, "con", allowed_ips)
-    
-    if ip in policy.get("allowed_ips", []):
-        return jsonify({ "allowed": True }), 200
-    else:
-
-    
-    # if ip not in policy.get("allowed_ips", []):
-        return jsonify({ "allowed": False, "reason": "IP not allowed" }), 403
-
-    country = get_country_from_ip(ip)
-
     allowed_countries = policy.get("allowed_countries", [])
 
-    if allowed_countries and country not in allowed_countries:
-        return jsonify({
-            "allowed": False,
-            "reason": f"Access from country '{country}' is not allowed"
-        }), 403
+    # print("🔍 Comparando IP:", repr(ip), "con", [repr(i) for i in allowed_ips])
 
-    return jsonify({ "allowed": True, "country": country }), 200
+    if ip in allowed_ips:
+        if allowed_countries:
+            country = get_country_from_ip(ip)
+            if country not in allowed_countries:
+                return jsonify({
+                    "allowed": False,
+                    "reason": f"Access from country '{country}' is not allowed"
+                }), 403
+            return jsonify({ "allowed": True, "country": country }), 200
+            return jsonify({ "allowed": True, "country": "ByPass" }), 200
+        else:
+            return jsonify({ "allowed": True }), 200
+    else:
+        return jsonify({ "allowed": False, "reason": "IP not allowed" }), 403
 
 @validation_blueprint.route("/add-policy", methods=["POST"])
 def add_policy():

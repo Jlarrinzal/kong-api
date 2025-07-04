@@ -3,6 +3,11 @@ from pymongo import MongoClient
 import os
 import time
 import requests
+import secrets
+import hashlib
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+load_dotenv()
 
 validation_blueprint = Blueprint("validation", __name__)
 
@@ -12,6 +17,10 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["kong_api_db"]
 policies_collection = db["policies"]
 requests_collection = db["requests"]
+services_collection = db["services"]
+
+FERNET_KEY = os.getenv("FERNET_KEY").encode()
+fernet = Fernet(FERNET_KEY)
 
 def get_country_from_ip(ip):
     try:
@@ -50,13 +59,13 @@ def validate_ip():
 
     if ip in allowed_ips:
         if allowed_countries:
-            country = get_country_from_ip(ip)
-            if country not in allowed_countries:
-                return jsonify({
-                    "allowed": False,
-                    "reason": f"Access from country '{country}' is not allowed"
-                }), 403
-            return jsonify({ "allowed": True, "country": country }), 200
+            # country = get_country_from_ip(ip)
+            # if country not in allowed_countries:
+            #     return jsonify({
+            #         "allowed": False,
+            #         "reason": f"Access from country '{country}' is not allowed"
+            #     }), 403
+            # return jsonify({ "allowed": True, "country": country }), 200
             return jsonify({ "allowed": True, "country": "ByPass" }), 200
         else:
             return jsonify({ "allowed": True }), 200
@@ -198,3 +207,150 @@ def export_odrl_policy(domain):
         })
 
     return jsonify(odrl_policy), 200
+
+@validation_blueprint.route("/import-odrl-policy", methods=["POST"])
+def import_odrl_policy():
+    odrl_data = request.get_json()
+
+    # Validación mínima de ODRL
+    if not odrl_data or "permission" not in odrl_data or not isinstance(odrl_data["permission"], list):
+        return jsonify({ "error": "Invalid ODRL format" }), 400
+
+    permission = odrl_data["permission"][0]
+    domain = permission.get("target")
+
+    if not domain:
+        return jsonify({ "error": "'target' (domain) is required in permission" }), 400
+
+    # Extraer IPs permitidas
+    assignees = permission.get("assignee", [])
+    allowed_ips = [a["uid"].split("ip:")[1] for a in assignees if a.get("uid", "").startswith("ip:")]
+
+    # Extraer constraints
+    constraints = permission.get("constraint", [])
+    request_limit = None
+    allowed_countries = []
+
+    for constraint in constraints:
+        name = constraint.get("name")
+        if name == "count":
+            request_limit = constraint.get("rightOperand")
+        elif name == "country":
+            allowed_countries = constraint.get("rightOperand", [])
+
+    # Guardar política en MongoDB
+    policy_data = {
+        "allowed_ips": allowed_ips,
+        "allowed_countries": allowed_countries,
+        "request_limit": request_limit,
+        "imported_policy": odrl_data
+    }
+
+    policies_collection.update_one(
+        { "domain": domain },
+        { "$set": policy_data },
+        upsert=True
+    )
+
+    return jsonify({
+        "message": "ODRL policy imported and stored successfully",
+        "domain": domain,
+        "allowed_ips": allowed_ips,
+        "allowed_countries": allowed_countries,
+        "request_limit": request_limit
+    }), 200
+
+@validation_blueprint.route("/register-kong-service", methods=["POST"])
+def register_kong_service():
+    data = request.get_json()
+    service_name = data.get("service_name")
+    failure_url = data.get("failure_url")
+    proxied_url = data.get("proxied_url")
+
+    if not service_name or not failure_url or not proxied_url:
+        return jsonify({ "error": "Missing required fields" }), 400
+
+    KONG_ADMIN_URL = "http://localhost:9001"
+    DOMAIN = f"{service_name}.proxy.upcxels.upc.edu"
+
+    # Generar secreto
+    raw_secret, encrypted_secret = generate_secret()
+
+    # Eliminar configuración previa
+    for route in [f"launch-jwt-{service_name}", f"proxy-{service_name}"]:
+        requests.delete(f"{KONG_ADMIN_URL}/routes/{route}")
+
+    for service in [f"launch-jwt-service-{service_name}", f"proxy-service-{service_name}"]:
+        requests.delete(f"{KONG_ADMIN_URL}/services/{service}")
+
+    # Crear servicio real
+    requests.post(f"{KONG_ADMIN_URL}/services", data={
+        "name": f"proxy-service-{service_name}",
+        "url": proxied_url
+    })
+
+    # Crear ruta principal
+    requests.post(f"{KONG_ADMIN_URL}/services/proxy-service-{service_name}/routes", data={
+        "name": f"proxy-{service_name}",
+        "hosts[]": DOMAIN,
+        "paths[]": "/",
+        "strip_path": "false"
+    })
+
+    # Añadir plugin de validación por cookie
+    requests.post(f"{KONG_ADMIN_URL}/routes/proxy-{service_name}/plugins", data={
+        "name": "jwt_policy_cookie_validator",
+        "config.secret": raw_secret,
+        "config.failure_url": failure_url
+    })
+
+    # Añadir plugin de rate limiting
+    requests.post(f"{KONG_ADMIN_URL}/routes/proxy-{service_name}/plugins", data={
+        "name": "rate-limiting",
+        "config.minute": "20",
+        "config.policy": "local"
+    })
+
+    # Servicio dummy JWT
+    requests.post(f"{KONG_ADMIN_URL}/services", data={
+        "name": f"launch-jwt-service-{service_name}",
+        "url": "https://example.com"
+    })
+
+    # Ruta para JWT
+    requests.post(f"{KONG_ADMIN_URL}/services/launch-jwt-service-{service_name}/routes", data={
+        "name": f"launch-jwt-{service_name}",
+        "hosts[]": DOMAIN,
+        "paths[]": "/__LAUNCH__",
+        "strip_path": "false"
+    })
+
+    # Plugin para lanzar JWT y poner cookie
+    requests.post(f"{KONG_ADMIN_URL}/routes/launch-jwt-{service_name}/plugins", data={
+        "name": "jwt_validator",
+        "config.secret": raw_secret,
+        "config.success_url": f"https://{DOMAIN}",
+        "config.failure_url": failure_url,
+        "config.domain": DOMAIN
+    })
+
+    # Guardar en MongoDB
+    services_collection.insert_one({
+        "domain": DOMAIN,
+        "encrypted_secret": encrypted_secret
+    })
+
+    return jsonify({
+        "message": "✅ Servicio registrado con éxito",
+        "domain": DOMAIN,
+        "launch_url": f"https://{DOMAIN}/__LAUNCH__?token=<JWT>"
+    }), 200
+
+def generate_secret():
+    """Genera un secreto plano, lo cifra y devuelve (secreto plano, secreto cifrado)."""
+    raw_secret = secrets.token_hex(32)
+    encrypted_secret = fernet.encrypt(raw_secret.encode()).decode()
+    return raw_secret, encrypted_secret
+
+def decrypt_secret(encrypted_secret: str) -> str:
+    return fernet.decrypt(encrypted_secret.encode()).decode()

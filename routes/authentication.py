@@ -4,7 +4,14 @@ import jwt
 import os
 import datetime
 import time
-from services.mongo_service import services_collection
+from routes.validation import decrypt_secret
+# from services.mongo_service import services_collection
+
+# Conexión a MongoDB
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["kong_api_db"]
+services_collection = db["services"]
 
 auth_blueprint = Blueprint("auth", __name__)
 
@@ -25,6 +32,39 @@ def generate_jwt():
 
     return jsonify({ 'token': token })
 
+
+@auth_blueprint.route('/generate-jwt', methods=['GET'])
+def generate_jwt_from_db():
+    domain = request.args.get('domain')
+    username = request.args.get('user', 'testuser')
+
+    if not domain:
+        return jsonify({ "error": "Missing 'domain' parameter" }), 400
+
+    # Buscar en Mongo
+    service = services_collection.find_one({ "domain": domain })
+    if not service:
+        return jsonify({ "error": f"No service found for domain '{domain}'" }), 404
+
+    encrypted_secret = service.get("encrypted_secret")
+    if not encrypted_secret:
+        return jsonify({ "error": "Missing encrypted secret in service record" }), 500
+
+    try:
+        raw_secret = decrypt_secret(encrypted_secret)
+    except Exception as e:
+        return jsonify({ "error": f"Failed to decrypt secret: {str(e)}" }), 500
+
+    # Crear el JWT
+    payload = {
+        "sub": username,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 60 * 5  # 5 minutos
+    }
+
+    token = jwt.encode(payload, raw_secret, algorithm='HS256')
+
+    return jsonify({ "token": token }), 200
 
 # SECRET_KEY = "mi_clave_secreta"
 

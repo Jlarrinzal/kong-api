@@ -5,3 +5,4 @@ PyJWT==2.10.1
 dotenv==0.9.9
 flasgger==0.9.7.1
 cryptography==45.0.2
+geoip2==5.1.0

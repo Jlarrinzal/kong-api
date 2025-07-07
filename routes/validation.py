@@ -5,6 +5,7 @@ import time
 import requests
 import secrets
 import hashlib
+import geoip2.database
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 load_dotenv()
@@ -22,20 +23,34 @@ services_collection = db["services"]
 FERNET_KEY = os.getenv("FERNET_KEY").encode()
 fernet = Fernet(FERNET_KEY)
 
+db_path = os.path.join("geodb", "GeoLite2-Country.mmdb")
+reader = geoip2.database.Reader(db_path)
+
 def get_country_from_ip(ip):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-        response = requests.get(f"https://ipapi.co/{ip}/json/", headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("country")
-        else:
-            print(f"Error: status code {response.status_code}")
+        response = reader.country(ip)
+        return response.country.iso_code
+    except geoip2.errors.AddressNotFoundError:
+        return None
     except Exception as e:
-        print(f"Error retrieving country for IP {ip}: {e}")
-    return None
+        print(f"Error getting country for IP {ip}: {e}")
+        return None
+
+# API para saber la geolocalización de una IP, tiene límite de uso
+# def get_country_from_ip(ip):
+#     try:
+#         headers = {
+#             "User-Agent": "Mozilla/5.0"
+#         }
+#         response = requests.get(f"https://ipapi.co/{ip}/json/", headers=headers)
+#         if response.status_code == 200:
+#             data = response.json()
+#             return data.get("country")
+#         else:
+#             print(f"Error: status code {response.status_code}")
+#     except Exception as e:
+#         print(f"Error retrieving country for IP {ip}: {e}")
+#     return None
 
 @validation_blueprint.route("/validate-ip", methods=["POST"])
 def validate_ip():
@@ -55,18 +70,21 @@ def validate_ip():
     allowed_ips = policy.get("allowed_ips", [])
     allowed_countries = policy.get("allowed_countries", [])
 
-    # print("🔍 Comparando IP:", repr(ip), "con", [repr(i) for i in allowed_ips])
-
     if ip in allowed_ips:
         if allowed_countries:
-            # country = get_country_from_ip(ip)
-            # if country not in allowed_countries:
-            #     return jsonify({
-            #         "allowed": False,
-            #         "reason": f"Access from country '{country}' is not allowed"
-            #     }), 403
-            # return jsonify({ "allowed": True, "country": country }), 200
-            return jsonify({ "allowed": True, "country": "ByPass" }), 200
+            country = get_country_from_ip(ip)
+            if country:
+                if country not in allowed_countries:
+                    return jsonify({
+                        "allowed": False,
+                        "reason": f"Access from country '{country}' is not allowed"
+                    }), 403
+                return jsonify({ "allowed": True, "country": country }), 200
+            else:
+                return jsonify({
+                    "allowed": False,
+                    "reason": "Could not determine country"
+                }), 403
         else:
             return jsonify({ "allowed": True }), 200
     else:
